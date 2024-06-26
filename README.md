@@ -15,5 +15,18 @@ Project that detects meteorites on videos from CCTV cameras
 
 ## Run Docker Image
 ```bash
-docker run meteorite-catcher
+docker run --rm --name meteorite-catcher meteorite-catcher
+```
+
+## Useful commands
+
+### Convert video to frames
+```bash
+ffmpeg -r 1 -i file.mp4 -r 1 "$filename%03d.png"
+```
+
+### Convert frames to video
+```bash
+ffmpeg -framerate 25 -pattern_type glob -i '*.png' \
+  -c:v libx264 -pix_fmt yuv420p out.mp4
 ```
