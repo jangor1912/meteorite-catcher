@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 
+from src.non_max_supression.nms import non_max_suppression
+
 
 def get_contour_detections(mask, thresh=400):
     """ Obtains initial proposed detections from contours discoverd on the mask.
@@ -23,29 +25,6 @@ def get_contour_detections(mask, thresh=400):
             detections.append([x,y,x+w,y+h, area])
 
     return np.array(detections)
-
-
-def remove_contained_bboxes(boxes):
-    """ Removes all smaller boxes that are contained within larger boxes.
-        Requires bboxes to be sorted by area (score)
-        Inputs:
-            boxes - array bounding boxes sorted (descending) by area
-                    [[x1,y1,x2,y2]]
-        Outputs:
-            keep - indexes of bounding boxes that are not entirely contained
-                   in another box
-        """
-    check_array = np.array([True, True, False, False])
-    keep = list(range(0, len(boxes)))
-    for i in keep: # range(0, len(bboxes)):
-        for j in range(0, len(boxes)):
-            # check if box j is completely contained in box i
-            if np.all((np.array(boxes[j]) >= np.array(boxes[i])) == check_array):
-                try:
-                    keep.remove(j)
-                except ValueError:
-                    continue
-    return keep
 
 
 def get_mask(frame1, frame2, kernel=np.array((9, 9), dtype=np.uint8)):
@@ -79,41 +58,6 @@ def get_mask(frame1, frame2, kernel=np.array((9, 9), dtype=np.uint8)):
     return mask
 
 
-def non_max_suppression(boxes, scores, threshold=1e-1):
-    """
-    Perform non-max suppression on a set of bounding boxes and corresponding scores.
-    Inputs:
-        boxes: a list of bounding boxes in the format [xmin, ymin, xmax, ymax]
-        scores: a list of corresponding scores
-        threshold: the IoU (intersection-over-union) threshold for merging bounding boxes
-    Outputs:
-        boxes - non-max suppressed boxes
-    """
-    # Sort the boxes by score in descending order
-    boxes = boxes[np.argsort(scores)[::-1]]
-
-    # remove all contained bounding boxes and get ordered index
-    order = remove_contained_bboxes(boxes)
-
-    keep = []
-    while order:
-        i = order.pop(0)
-        keep.append(i)
-        for j in order:
-            # Calculate the IoU between the two boxes
-            intersection = max(0, min(boxes[i][2], boxes[j][2]) - max(boxes[i][0], boxes[j][0])) * \
-                           max(0, min(boxes[i][3], boxes[j][3]) - max(boxes[i][1], boxes[j][1]))
-            union = (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]) + \
-                    (boxes[j][2] - boxes[j][0]) * (boxes[j][3] - boxes[j][1]) - intersection
-            iou = intersection / union
-
-            # Remove boxes with IoU greater than the threshold
-            if iou > threshold:
-                order.remove(j)
-
-    return boxes[keep]
-
-
 def get_detections(frame1, frame2, bbox_thresh=400, nms_thresh=1e-3, mask_kernel=np.array((9,9), dtype=np.uint8)):
     """ Main function to get detections via Frame Differencing
         Inputs:
@@ -134,12 +78,10 @@ def get_detections(frame1, frame2, bbox_thresh=400, nms_thresh=1e-3, mask_kernel
 
     # separate bboxes and scores
     if len(detections) > 0:
-        bboxes = detections[:, :4]
-        scores = detections[:, -1]
-
-        # perform Non-Maximal Supression on initial detections
-        return non_max_suppression(bboxes, scores, nms_thresh)
-    return []
+        # perform Non-Maximal Suppression on initial detections
+        indices_to_keep = non_max_suppression(detections, iou_threshold=nms_thresh)
+        return detections[indices_to_keep]
+    return np.zeros((len(detections), 5), dtype=np.float32)
 
 
 def detections_to_numpy_array(detections: list[tuple]) -> np.array:

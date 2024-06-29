@@ -22,7 +22,7 @@ docker run --rm --name meteorite-catcher meteorite-catcher
 
 ### Convert video to frames
 ```bash
-ffmpeg -r 1 -i file.mp4 -r 1 "$filename%03d.png"
+ffmpeg -r 1 -i videos/some-video.mp4 -r 1 "images/some-video/$filename%03d.png"
 ```
 
 ### Convert frames to video

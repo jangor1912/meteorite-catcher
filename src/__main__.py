@@ -1,12 +1,11 @@
 from pathlib import Path
 
 import cv2
+import numpy as np
 from ioutrack import Sort
-from matplotlib import pyplot as plt
 
-from src.file_operations.images import get_image_paths, draw_tracks, create_gif_from_images
-from src.frame_difference_detection.detector import get_detections, detections_to_numpy_array
-# from src.profile_functions import profile_detections
+from src.file_operations.images import get_image_paths, create_gif_from_images, draw_tracks_numpy, save_numpy_image
+from src.frame_difference_detection.detector import get_detections
 
 PROJECT_DIRECTORY = Path(__file__).parent.parent
 DATA_DIRECTORY = PROJECT_DIRECTORY / "data"
@@ -28,10 +27,8 @@ def draw_tracks_on_images(image_paths: list[str], output_directory: Path) -> Non
                                   cv2.cvtColor(frame2_bgr, cv2.COLOR_BGR2GRAY),
                                   bbox_thresh=128,
                                   nms_thresh=1e-3)
-    detections_1_numpy = detections_to_numpy_array(detections_1)
-    tracker.update(detections_1_numpy, return_all=False)
 
-    tracks = list()
+    tracker.update(detections_1.astype(np.float32), return_all=False)
 
     while idx < len(image_paths):
         # read frames
@@ -42,21 +39,18 @@ def draw_tracks_on_images(image_paths: list[str], output_directory: Path) -> Non
                                       cv2.cvtColor(frame3_bgr, cv2.COLOR_BGR2GRAY),
                                       bbox_thresh=128,
                                       nms_thresh=1e-3)
-
-        detections_2_numpy = detections_to_numpy_array(detections_2)
-        tracks = tracker.update(detections_2_numpy, return_all=False)
+        tracks = tracker.update(detections_2.astype(np.float32), return_all=False)
 
         # draw only after initial period
         if idx > min_hits:
             # draw bounding boxes on frame
-            draw_tracks(frame2_bgr, tracks)
+            draw_tracks_numpy(frame2_bgr, tracks)
 
         # save image for GIF
-        fig = plt.figure(figsize=(15, 7))
-        plt.imshow(frame2_bgr)
-        plt.axis('off')
-        fig.savefig(f"{output_directory}/frame_{idx - 1}.png")
-        plt.close()
+        save_numpy_image(
+            image=frame2_bgr,
+            image_output_path=output_directory / f"frame_{idx - 1}.png"
+        )
 
         # increment index
         frame1_bgr = frame2_bgr
@@ -66,7 +60,7 @@ def draw_tracks_on_images(image_paths: list[str], output_directory: Path) -> Non
 
 
 def main() -> None:
-    video_name = "meteorite-exploding"
+    video_name = "meteorite-vertical"
 
     images_directory = IMAGES_DIRECTORY / video_name
 

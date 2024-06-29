@@ -2,6 +2,8 @@ import os
 import re
 from glob import glob
 from pathlib import Path
+
+import numpy as np
 from PIL import Image
 
 import cv2
@@ -22,6 +24,21 @@ def draw_tracks(frame, tracks):
             (int(x2),int(y2)),
             (0,255,0), 3
         )
+
+
+def draw_tracks_numpy(frame, tracks):
+    for det in tracks:
+        cv2.rectangle(
+            frame,
+            (int(det[0]),int(det[1])),
+            (int(det[2]),int(det[3])),
+            (0,255,0), 3
+        )
+
+
+def save_numpy_image(image: np.ndarray, image_output_path: Path) -> None:
+    im = Image.fromarray(image)
+    im.save(str(image_output_path.absolute()))
 
 
 def create_gif_from_images(save_path : str, image_path : str, ext : str) -> None:
