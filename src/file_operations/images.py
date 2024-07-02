@@ -3,10 +3,12 @@ import re
 from glob import glob
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
 
 import cv2
+from matplotlib import pyplot as plt
+
+from src.types import NumpyImage, BBoxList
 
 
 def get_image_paths(images_dir: Path, image_extension: str) -> list[str]:
@@ -15,18 +17,7 @@ def get_image_paths(images_dir: Path, image_extension: str) -> list[str]:
     return image_paths
 
 
-def draw_tracks(frame, tracks):
-    for det in tracks:
-        x1, y1, x2, y2, _ = det
-        cv2.rectangle(
-            frame,
-            (int(x1),int(y1)),
-            (int(x2),int(y2)),
-            (0,255,0), 3
-        )
-
-
-def draw_tracks_numpy(frame, tracks):
+def draw_tracks_numpy(frame: NumpyImage, tracks: BBoxList):
     for det in tracks:
         cv2.rectangle(
             frame,
@@ -36,9 +27,17 @@ def draw_tracks_numpy(frame, tracks):
         )
 
 
-def save_numpy_image(image: np.ndarray, image_output_path: Path) -> None:
+def save_numpy_image(image: NumpyImage, image_output_path: Path) -> None:
     im = Image.fromarray(image)
     im.save(str(image_output_path.absolute()))
+
+
+def save_as_plot(image: NumpyImage, image_output_path: Path) -> None:
+    fig = plt.figure(figsize=(15, 7))
+    plt.imshow(image)
+    plt.axis('off')
+    fig.savefig(str(image_output_path.absolute()))
+    plt.close()
 
 
 def create_gif_from_images(save_path : str, image_path : str, ext : str) -> None:

@@ -1,11 +1,19 @@
+import logging
+import sys
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 from ioutrack import Sort
 
-from src.file_operations.images import get_image_paths, create_gif_from_images, draw_tracks_numpy, save_numpy_image
-from src.frame_difference_detection.detector import get_detections
+from src.detectors.frame_diff import FrameDiffDetector
+from src.file_operations.generators import ImageGenerator
+from src.file_operations.images import draw_tracks_numpy, save_numpy_image
+from src.detectors.functions import get_detections
+from src.file_operations.writer import ImageWriter
+
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 PROJECT_DIRECTORY = Path(__file__).parent.parent
 DATA_DIRECTORY = PROJECT_DIRECTORY / "data"
@@ -59,25 +67,62 @@ def draw_tracks_on_images(image_paths: list[str], output_directory: Path) -> Non
         idx += 1
 
 
+def draw_tracks(image_directory: Path, output_directory: Path) -> None:
+    image_generator = ImageGenerator(images_directory=image_directory)
+    detector = FrameDiffDetector(bbox_threshold=128, nms_threshold=1e-3)
+    tracker = Sort(min_hits=5, max_age=5)
+    image_writer = ImageWriter(output_directory=output_directory)
+
+    images_number = len(image_generator)
+
+    for i, image in enumerate(image_generator):
+        logging.info(f"Processing image {i} / {images_number}")
+        start_time = time.time()
+
+        bboxes = detector.update(image)
+        bboxes = tracker.update(bboxes, return_all=False)
+
+        inference_time = time.time()
+
+        logging.info(f"\tInference latency: {inference_time - start_time}")
+
+        draw_tracks_numpy(
+            frame=image,
+            tracks=bboxes
+        )
+
+        image_writer.save(image)
+
+        writing_time = time.time()
+        logging.info(f"\tWriting image latency: {writing_time - inference_time}")
+
+        logging.info(f"\tFinished. Took {writing_time - start_time}")
+
+
 def main() -> None:
-    video_name = "meteorite-vertical"
+    video_name = "meteorite-exploding"
 
     images_directory = IMAGES_DIRECTORY / video_name
 
-    image_paths = get_image_paths(images_directory, "png")
+    # image_paths = get_image_paths(images_directory, "png")
 
     output_directory = OUTPUT_DIRECTORY / video_name
     output_directory.mkdir(exist_ok=True, parents=True)
 
-    draw_tracks_on_images(
-        image_paths=image_paths,
-        output_directory=output_directory
-    )
+    # draw_tracks_on_images(
+    #     image_paths=image_paths,
+    #     output_directory=output_directory
+    # )
+    #
+    # create_gif_from_images(
+    #     str(output_directory / f"{video_name}.gif"),
+    #     str(output_directory),
+    #     ".png"
+    # )
 
-    create_gif_from_images(
-        str(output_directory / f"{video_name}.gif"),
-        str(output_directory),
-        ".png"
+    draw_tracks(
+        image_directory=images_directory,
+        output_directory=output_directory
     )
 
 

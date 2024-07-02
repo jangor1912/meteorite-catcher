@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from src.file_operations.images import draw_tracks_numpy
-from src.frame_difference_detection.detector import get_detections
+from src.detectors.functions import get_detections
 
 PROJECT_DIRECTORY = Path(__file__).parent.parent
 DATA_DIRECTORY = PROJECT_DIRECTORY / "data"
