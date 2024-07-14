@@ -18,6 +18,27 @@ Project that detects meteorites on videos from CCTV cameras
 docker run --rm --name meteorite-catcher meteorite-catcher
 ```
 
+### In interactive mode
+```bash
+docker run \
+  -it \
+  --entrypoint "/bin/bash" \
+  --rm \
+  -v ./data:/data \
+  --name meteorite-catcher \
+  meteorite-catcher
+```
+
+## Test if gstreamer is working
+```bash
+gst-launch-1.0 \
+  filesrc location=/data/videos/meteorite-vertical.mp4 \
+  ! decodebin \
+  ! videoconvert \
+  ! jpegenc \
+  ! multifilesink location=/data/images/gstreamer-test/%05d.jpg
+```
+
 ## Useful commands
 
 ### Convert video to frames

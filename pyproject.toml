@@ -12,16 +12,21 @@ packages = [
 package-mode = false
 
 [tool.poetry.dependencies]
-python = "^3.12"
-numpy = "^1.26.4"
+python = "^3.10"
+numpy = "^1.14.3"
+pycairo = "^1.18.2"
+PyGObject = "*"
+attrs = "^19.3.0"
 opencv-python = "^4.9.0.80"
 matplotlib = "^3.9.0"
-sortedcontainers = "2.4.0"
 ioutrack = "^0.3.0"
 
 [tool.poetry.group.test.dependencies]
-pytest = "^8.2.1"
+pytest = "^5.3.2"
+pytest-benchmark = "^3.2.2"
 jupyter = "^1.0.0"
+autopep8 = "^1.4.4"
+flake8 = "^3.7.9"
 
 [build-system]
 requires = ["poetry-core"]
