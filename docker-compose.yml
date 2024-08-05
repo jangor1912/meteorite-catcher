@@ -1,0 +1,9 @@
+services:
+  meteorite-catcher:
+    build:
+      context: .
+      target: dev
+    image: meteorite-catcher:latest
+    volumes:
+      - .:/src
+

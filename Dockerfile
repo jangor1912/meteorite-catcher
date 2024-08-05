@@ -116,7 +116,7 @@ FROM prod as dev
 RUN poetry install --no-interaction --no-ansi
 
 # Creating folders, and files for a project:
-COPY ./dev /code
-COPY ./tests /code
+COPY ./dev /code/dev
+COPY ./tests /code/tests
 
-ENTRYPOINT ["pytest"]
+CMD ["pytest"]

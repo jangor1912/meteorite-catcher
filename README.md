@@ -39,6 +39,30 @@ gst-launch-1.0 \
   ! multifilesink location=/data/images/gstreamer-test/%05d.jpg
 ```
 
+## Open rtsp-stream within the container
+First run container in interactive mode:
+```bash
+docker run \
+  --rm \
+  -it \
+  --network=host \
+  bluenviron/mediamtx
+```
+
+Then - open rtsp stream (in a separate console):
+```bash
+
+
+ffmpeg -re -stream_loop -1 \
+  -i data/videos/meteorite-exploding.mp4 \
+  -c copy -f rtsp rtsp://localhost:8554/mystream
+```
+
+Then - you can connect to the stream via VLC player
+```bash
+vlc --network-caching=50 rtsp://localhost:8554/mystream
+```
+
 ## Useful commands
 
 ### Convert video to frames
