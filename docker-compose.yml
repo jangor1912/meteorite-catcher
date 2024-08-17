@@ -6,4 +6,11 @@ services:
     image: meteorite-catcher:latest
     volumes:
       - .:/src
+    networks:
+      - my-rtsp-network
+
+networks:
+  my-rtsp-network:
+    name: my-rtsp-network
+    external: true
 

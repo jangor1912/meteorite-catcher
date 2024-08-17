@@ -40,27 +40,55 @@ gst-launch-1.0 \
 ```
 
 ## Open rtsp-stream within the container
+
+Before everything else please create docker network:
+```bash
+docker network create -d bridge my-rtsp-network
+```
+
 First run container in interactive mode:
 ```bash
 docker run \
   --rm \
   -it \
-  --network=host \
+  --network=my-rtsp-network \
+  --name mediamtx \
+  -p 8554:8554 \
   bluenviron/mediamtx
 ```
 
 Then - open rtsp stream (in a separate console):
 ```bash
-
-
-ffmpeg -re -stream_loop -1 \
-  -i data/videos/meteorite-exploding.mp4 \
-  -c copy -f rtsp rtsp://localhost:8554/mystream
+docker run \
+  --rm \
+  -it \
+  --network=my-rtsp-network \
+  --name ffmpeg \
+  -v ./data/videos:/data/videos \
+  linuxserver/ffmpeg \
+    -re -stream_loop -1 \
+      -i /data/videos/meteorite-vertical.mp4 \
+      -c copy -f rtsp rtsp://mediamtx:8554/mystream
 ```
 
 Then - you can connect to the stream via VLC player
 ```bash
 vlc --network-caching=50 rtsp://localhost:8554/mystream
+```
+
+You can also check if the gstreamer conatainer is able to capture the stream:
+```bash
+docker run \
+  -it \
+  --rm \
+  --network=my-rtsp-network \
+  --name meteorite-catcher \
+  -e GST_DEBUG=3 \
+  -v ./data/videos:/data/videos \
+  meteorite-catcher:latest \
+      gst-launch-1.0 -e \
+      rtspsrc location=rtsp://mediamtx:8554/mystream \
+      ! rtph264depay ! h264parse ! mp4mux ! filesink location=/data/videos/camera.mp4
 ```
 
 ## Useful commands
