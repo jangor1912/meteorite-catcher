@@ -76,7 +76,7 @@ Then - you can connect to the stream via VLC player
 vlc --network-caching=50 rtsp://localhost:8554/mystream
 ```
 
-You can also check if the gstreamer conatainer is able to capture the stream:
+You can also check if the gstreamer container is able to capture the stream:
 ```bash
 docker run \
   -it \

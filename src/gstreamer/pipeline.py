@@ -32,7 +32,7 @@ class TrackerPipeline:
 
     rtsp_source -> rtp_queue -> depay -> h264parser \
     -> app_tee -> avdec_h264 -> videoconvert -> appsink
-               -> queue -> sink_tee -> mp4mux -> file_sink
+               -> queue -> sink_tee -> file_sink_queue -> mp4mux -> file_sink
                                     -> fakesink
 
 
@@ -65,6 +65,7 @@ class TrackerPipeline:
         self._sink_queue = None
         self._sink_tee = None
 
+        self._file_sink_queue = None
         self._mp4mux = None
         self._file_sink = None
         # self._fake_sink = None
@@ -88,6 +89,7 @@ class TrackerPipeline:
         self._sink_queue = Gst.ElementFactory.make("queue", "sink-queue")
         self._sink_tee = Gst.ElementFactory.make("tee", "sink-tee")
 
+        self._file_sink_queue = Gst.ElementFactory.make("queue", "file-sink-queue")
         self._mp4mux = Gst.ElementFactory.make("mp4mux", "mp4-muxer")
         self._file_sink = Gst.ElementFactory.make("filesink", "file-sink")
         # self._fake_sink = Gst.ElementFactory.make("fakesink", "fake-sink")
@@ -102,6 +104,7 @@ class TrackerPipeline:
         # assert self._appsink
         assert self._sink_queue
         assert self._sink_tee
+        assert self._file_sink_queue
         assert self._mp4mux
         assert self._file_sink
         # assert self._fake_sink
@@ -116,6 +119,7 @@ class TrackerPipeline:
         # self.pipeline.add(self._appsink)
         self.pipeline.add(self._sink_queue)
         self.pipeline.add(self._sink_tee)
+        self.pipeline.add(self._file_sink_queue)
         self.pipeline.add(self._mp4mux)
         self.pipeline.add(self._file_sink)
         # self.pipeline.add(self._fake_sink)
@@ -136,10 +140,11 @@ class TrackerPipeline:
 
         sink_tee_src_pad_0 = self._sink_tee.get_request_pad("src_0")
         assert sink_tee_src_pad_0
-        mp4_muxer_sink_pad = self._mp4mux.get_request_pad("video_0")
-        assert mp4_muxer_sink_pad
-        assert sink_tee_src_pad_0.link(mp4_muxer_sink_pad) == Gst.PadLinkReturn.OK
+        file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad("sink")
+        assert file_sink_queue_sink_pad
+        assert sink_tee_src_pad_0.link(file_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
 
+        assert self._file_sink_queue.link(self._mp4mux)
         assert self._mp4mux.link(self._file_sink)
 
         # set rtsp url
@@ -199,18 +204,16 @@ class TrackerPipeline:
         # else:
         # Recording should be stopped -> file_sink_queue will be unlinked from tee element
         logger.info(f"Reached stopping in '_stop_recording_pad_callback'!")
-        # file_sink_queue_sink_pad = self._sink_queue.get_static_pad('sink')
-        # assert file_sink_queue_sink_pad
-        # sink_tee_pad = self._sink_tee.get_request_pad('src_0')
-        # assert sink_tee_pad
-        # sink_tee_pad.unlink(file_sink_queue_sink_pad)
+        file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad('sink')
+        assert file_sink_queue_sink_pad
+        sink_tee_pad = self._sink_tee.get_static_pad('src_0')
+        assert sink_tee_pad
+        sink_tee_pad.unlink(file_sink_queue_sink_pad)
 
         # End of stream message triggers the file write to finalise file writing including file headers/footers.
-        file_sink_queue_sink_pad = self._sink_queue.get_static_pad("sink")
-        assert file_sink_queue_sink_pad
         file_sink_queue_sink_pad.send_event(Gst.Event.new_eos())
 
-        assert self._sink_queue.set_state(Gst.State.NULL)
+        assert self._file_sink_queue.set_state(Gst.State.NULL)
         assert self._mp4mux.set_state(Gst.State.NULL)
         assert self._file_sink.set_state(Gst.State.NULL)
 
@@ -241,9 +244,11 @@ class TrackerPipeline:
         print("Position: %s\r" % Gst.TIME_ARGS(position))
 
         if position > 5 * Gst.SECOND:
+            print("Started stopping the recording!")
             self.begin_stopping_recording()
+            print("Recording is stopping!")
             loop.quit()
-            print("Stopping after 10 seconds")
+            print("Stopped after 10 seconds")
             return False
 
         return True
