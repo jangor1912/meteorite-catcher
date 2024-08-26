@@ -1,10 +1,12 @@
+import datetime
 import logging
 import os
 import sys
-import time
 from pathlib import Path
 
 import gi
+
+from src.gstreamer.utils import RecordingState
 
 gi.require_version('Gst', '1.0')
 gi.require_version('GstApp', '1.0')
@@ -68,11 +70,15 @@ class TrackerPipeline:
         self._file_sink_queue = None
         self._mp4mux = None
         self._file_sink = None
-        # self._fake_sink = None
+
+        self._fake_sink_queue = None
+        self._fake_sink = None
 
         self._recordings_directory.mkdir(parents=True, exist_ok=True)
         self.initialize_pipeline()
-        self.add_bus_to_pipeline()
+
+        self._state: RecordingState = RecordingState.NOT_STARTED
+        self.recordings_counter = 0
 
     def initialize_pipeline(self) -> None:
         self._rtsp_source = Gst.ElementFactory.make("rtspsrc", "rtsp-source")
@@ -92,7 +98,9 @@ class TrackerPipeline:
         self._file_sink_queue = Gst.ElementFactory.make("queue", "file-sink-queue")
         self._mp4mux = Gst.ElementFactory.make("mp4mux", "mp4-muxer")
         self._file_sink = Gst.ElementFactory.make("filesink", "file-sink")
-        # self._fake_sink = Gst.ElementFactory.make("fakesink", "fake-sink")
+
+        self._fake_sink_queue = Gst.ElementFactory.make("queue", "fake-sink-queue")
+        self._fake_sink = Gst.ElementFactory.make("fakesink", "fake-sink")
 
         assert self._rtsp_source
         assert self._rtp_queue
@@ -107,7 +115,8 @@ class TrackerPipeline:
         assert self._file_sink_queue
         assert self._mp4mux
         assert self._file_sink
-        # assert self._fake_sink
+        assert self._fake_sink_queue
+        assert self._fake_sink
 
         self.pipeline.add(self._rtsp_source)
         self.pipeline.add(self._rtp_queue)
@@ -122,7 +131,8 @@ class TrackerPipeline:
         self.pipeline.add(self._file_sink_queue)
         self.pipeline.add(self._mp4mux)
         self.pipeline.add(self._file_sink)
-        # self.pipeline.add(self._fake_sink)
+        self.pipeline.add(self._fake_sink_queue)
+        self.pipeline.add(self._fake_sink)
 
         self._rtsp_source.connect("pad-added", self.on_rtsp_src_pad_added)
 
@@ -140,10 +150,16 @@ class TrackerPipeline:
 
         sink_tee_src_pad_0 = self._sink_tee.get_request_pad("src_0")
         assert sink_tee_src_pad_0
+        fake_sink_queue_sink_pad = self._fake_sink_queue.get_static_pad("sink")
+        assert fake_sink_queue_sink_pad
+        assert sink_tee_src_pad_0.link(fake_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
+        assert self._fake_sink_queue.link(self._fake_sink)
+
+        sink_tee_src_pad_1 = self._sink_tee.get_request_pad("src_1")
+        assert sink_tee_src_pad_1
         file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad("sink")
         assert file_sink_queue_sink_pad
-        assert sink_tee_src_pad_0.link(file_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
-
+        assert sink_tee_src_pad_1.link(file_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
         assert self._file_sink_queue.link(self._mp4mux)
         assert self._mp4mux.link(self._file_sink)
 
@@ -151,7 +167,10 @@ class TrackerPipeline:
         self._rtsp_source.set_property("location", self.rtsp_url)
 
         # set file sink location
-        self._file_sink.set_property("location", f"{self._recordings_directory}/idk.mp4")
+        self._file_sink.set_property(
+            "location",
+            f"{self._recordings_directory}/first-few-frames.mp4"
+        )
 
         # set buffer on file-sink queue to record some time before transaction
         self._sink_queue.set_property("min-threshold-time", self._recording_buffer)
@@ -159,17 +178,29 @@ class TrackerPipeline:
         self._sink_queue.set_property("max-size-time", 0)
         self._sink_queue.set_property("max-size-bytes", 0)
 
-    def add_bus_to_pipeline(self) -> None:
-        loop = GLib.MainLoop()
+    @property
+    def state(self) -> RecordingState:
+        return self._state
+
+    @state.setter
+    def state(self, new_state: RecordingState) -> None:
+        logger.info(f"Changing state from {self._state.value} to {new_state.value}")
+        self._state = new_state
+
+    def add_bus_to_pipeline(self, loop: GLib.MainLoop) -> None:
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self.on_message, loop)
 
-    @staticmethod
-    def on_message(bus: Gst.Bus, message: Gst.Message, loop: GLib.MainLoop) -> None:
+    def get_current_stream_id(self) -> str | None:
+        queue_sink_pad = self._rtp_queue.get_static_pad("sink")
+        return queue_sink_pad.get_stream_id()
+
+    def on_message(self, bus: Gst.Bus, message: Gst.Message, loop: GLib.MainLoop) -> None:
         t = message.type
         if t == Gst.MessageType.EOS:
             logger.info("End-of-stream")
+            self.terminate()
             loop.quit()
         elif t == Gst.MessageType.WARNING:
             err, debug = message.parse_warning()
@@ -177,6 +208,7 @@ class TrackerPipeline:
         elif t == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
             logger.error(f"Error: {err}: {debug}")
+            self.terminate()
             loop.quit()
 
     def on_rtsp_src_pad_added(self, element: Gst.Element, pad: Gst.Pad) -> None:
@@ -188,11 +220,49 @@ class TrackerPipeline:
         else:
             logger.error(f"[Element = {element}] rtp-queue could not be linked linked to rtsp-source!")
 
-    def start_pipeline(self) -> None:
+    def start_pipeline(self, loop: GLib.MainLoop) -> None:
         logger.info(f"Starting pipeline for rtsp-url: {self.rtsp_url}.")
+        self.add_bus_to_pipeline(loop)
         ret = self.pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
             raise RuntimeError(f"Unable to set the pipeline for rtsp-url: {self.rtsp_url} to the playing state")
+        self.state = RecordingState.RECORDING
+
+    def _start_recording_pad_callback(self, pad, info):
+        sink_tee_src_pad_1 = self._sink_tee.get_static_pad("src_1")
+        assert sink_tee_src_pad_1
+        file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad('sink')
+        assert file_sink_queue_sink_pad
+        assert sink_tee_src_pad_1.link(file_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
+
+        stream_id = self.get_current_stream_id()
+        assert stream_id
+
+        file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad("sink")
+        assert file_sink_queue_sink_pad
+        file_sink_queue_sink_pad.send_event(Gst.Event.new_stream_start(stream_id))
+
+        self._sink_tee.sync_state_with_parent()
+        self._file_sink_queue.sync_state_with_parent()
+        self._mp4mux.sync_state_with_parent()
+        self._file_sink.sync_state_with_parent()
+
+        self.state = RecordingState.RECORDING
+
+        return Gst.PadProbeReturn.REMOVE
+
+    def begin_starting_recording(self) -> None:
+        logger.info(f"Starting recording!")
+        current_datetime = datetime.datetime.now()
+        self._file_sink.set_property(
+            "location",
+            f"{self._recordings_directory}/recording-{self.recordings_counter}-date-{current_datetime.isoformat()}.mp4"
+        )
+        sink_tee_src_pad_1 = self._sink_tee.get_static_pad("src_1")
+        assert sink_tee_src_pad_1
+        sink_tee_src_pad_1.add_probe(Gst.PadProbeType.IDLE, self._start_recording_pad_callback)
+
+        self.state = RecordingState.STARTING
 
     def _stop_recording_pad_callback(self, pad, info):
         # if self.stop_recording_time is None:
@@ -217,6 +287,8 @@ class TrackerPipeline:
         assert self._mp4mux.set_state(Gst.State.NULL)
         assert self._file_sink.set_state(Gst.State.NULL)
 
+        self.state = RecordingState.STOPPED
+
         return Gst.PadProbeReturn.REMOVE
 
     def begin_stopping_recording(self) -> None:
@@ -238,19 +310,34 @@ class TrackerPipeline:
         sink_tee_pad.add_probe(
             Gst.PadProbeType.IDLE, self._stop_recording_pad_callback
         )
+        self.state = RecordingState.STOPPING
+
+    def terminate(self) -> None:
+        self.pipeline.set_state(Gst.State.NULL)
 
     def stop_after_5_seconds(self, loop) -> bool:
         _, position = self.pipeline.query_position(Gst.Format.TIME)
         print("Position: %s\r" % Gst.TIME_ARGS(position))
 
         if position > 5 * Gst.SECOND:
-            print("Started stopping the recording!")
-            self.begin_stopping_recording()
-            print("Recording is stopping!")
-            loop.quit()
-            print("Stopped after 10 seconds")
+            print("Emitting EOS event to pipeline")
+            self.pipeline.send_event(Gst.Event.new_eos())
             return False
+        return True
 
+    def new_recording_every_10_seconds(self, loop) -> bool:
+        _, position = self.pipeline.query_position(Gst.Format.TIME)
+        print("Position: %s\r" % Gst.TIME_ARGS(position))
+
+        if position < 10 * Gst.SECOND:
+            return True
+        elif position % (10 * Gst.SECOND) < Gst.SECOND:
+            if self.state == RecordingState.RECORDING:
+                logger.info("Trying to stop recording!")
+                self.begin_stopping_recording()
+            elif self.state == RecordingState.STOPPED:
+                logger.info("Trying to start recording!")
+                self.begin_starting_recording()
         return True
 
 
@@ -269,15 +356,12 @@ if __name__ == "__main__":
     )
     logger.info(f"Successfully created TrackingPipeline for stream {local_rtsp_url}")
 
-    GLib.timeout_add_seconds(1, pipeline.stop_after_5_seconds, main_loop)
+    GLib.timeout_add_seconds(1, pipeline.new_recording_every_10_seconds, main_loop)
 
-    pipeline.start_pipeline()
+    pipeline.start_pipeline(main_loop)
 
     try:
         main_loop.run()
     except Exception as e:
         logger.error(f"Exception during pipeline execution. Error = {e}")
         pass
-
-    # cleanup
-    pipeline.pipeline.set_state(Gst.State.NULL)

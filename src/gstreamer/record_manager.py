@@ -1,31 +1,11 @@
 import collections
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Callable
 
+from src.gstreamer.utils import RecordingState
+
 logger = logging.getLogger(__name__)
-
-
-class RecordingState(Enum):
-    NOT_STARTED = "NOT_STARTED"
-    STARTING = "STARTING"
-    RECORDING = "RECORDING"
-    STOPPING = "STOPPING"
-    STOPPED = "STOPPED"
-
-    def next_state(self) -> "RecordingState":
-        match self:
-            case RecordingState.NOT_STARTED:
-                return RecordingState.STARTING
-            case RecordingState.STARTING:
-                return RecordingState.RECORDING
-            case RecordingState.RECORDING:
-                return RecordingState.STOPPING
-            case RecordingState.STOPPING:
-                return RecordingState.STOPPED
-            case RecordingState.STOPPED:
-                return RecordingState.NOT_STARTED
 
 
 @dataclass
