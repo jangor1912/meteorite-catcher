@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import gi
@@ -67,6 +68,8 @@ class TrackerPipeline:
         self._sink_queue = None
         self._sink_tee = None
 
+        self._sink_tee_src_record_pad = None
+
         self._file_sink_queue = None
         self._mp4mux = None
         self._file_sink = None
@@ -74,11 +77,14 @@ class TrackerPipeline:
         self._fake_sink_queue = None
         self._fake_sink = None
 
+        self._recording_started_time = None
         self._recordings_directory.mkdir(parents=True, exist_ok=True)
         self.initialize_pipeline()
 
         self._state: RecordingState = RecordingState.NOT_STARTED
         self.recordings_counter = 0
+        self._last_recording_start_time = time.time()
+        self._last_recording_stop_time = time.time()
 
     def initialize_pipeline(self) -> None:
         self._rtsp_source = Gst.ElementFactory.make("rtspsrc", "rtsp-source")
@@ -156,10 +162,12 @@ class TrackerPipeline:
         assert self._fake_sink_queue.link(self._fake_sink)
 
         sink_tee_src_pad_1 = self._sink_tee.get_request_pad("src_1")
-        assert sink_tee_src_pad_1
+        self._sink_tee_src_record_pad = sink_tee_src_pad_1
+
+        assert self._sink_tee_src_record_pad
         file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad("sink")
         assert file_sink_queue_sink_pad
-        assert sink_tee_src_pad_1.link(file_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
+        assert self._sink_tee_src_record_pad.link(file_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
         assert self._file_sink_queue.link(self._mp4mux)
         assert self._mp4mux.link(self._file_sink)
 
@@ -227,13 +235,21 @@ class TrackerPipeline:
         if ret == Gst.StateChangeReturn.FAILURE:
             raise RuntimeError(f"Unable to set the pipeline for rtsp-url: {self.rtsp_url} to the playing state")
         self.state = RecordingState.RECORDING
+        self._recording_started_time = time.time()
 
     def _start_recording_pad_callback(self, pad, info):
-        sink_tee_src_pad_1 = self._sink_tee.get_static_pad("src_1")
-        assert sink_tee_src_pad_1
+        assert self._file_sink_queue.set_state(Gst.State.NULL)
+        assert self._mp4mux.set_state(Gst.State.NULL)
+        assert self._file_sink.set_state(Gst.State.NULL)
+
+        self._file_sink.set_property(
+            "location",
+            f"{self._recordings_directory}/{datetime.datetime.now().isoformat()}.mp4"
+        )
+
         file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad('sink')
         assert file_sink_queue_sink_pad
-        assert sink_tee_src_pad_1.link(file_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
+        assert pad.link(file_sink_queue_sink_pad) == Gst.PadLinkReturn.OK
 
         stream_id = self.get_current_stream_id()
         assert stream_id
@@ -253,16 +269,20 @@ class TrackerPipeline:
 
     def begin_starting_recording(self) -> None:
         logger.info(f"Starting recording!")
+
+        self._last_recording_start_time = time.time()
+
         current_datetime = datetime.datetime.now()
         self._file_sink.set_property(
             "location",
             f"{self._recordings_directory}/recording-{self.recordings_counter}-date-{current_datetime.isoformat()}.mp4"
         )
-        sink_tee_src_pad_1 = self._sink_tee.get_static_pad("src_1")
-        assert sink_tee_src_pad_1
-        sink_tee_src_pad_1.add_probe(Gst.PadProbeType.IDLE, self._start_recording_pad_callback)
 
-        self.state = RecordingState.STARTING
+        assert self._sink_tee_src_record_pad
+        self._sink_tee_src_record_pad.add_probe(Gst.PadProbeType.IDLE, self._start_recording_pad_callback)
+
+        if self.state != RecordingState.RECORDING:
+            self.state = RecordingState.STARTING
 
     def _stop_recording_pad_callback(self, pad, info):
         # if self.stop_recording_time is None:
@@ -276,16 +296,15 @@ class TrackerPipeline:
         logger.info(f"Reached stopping in '_stop_recording_pad_callback'!")
         file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad('sink')
         assert file_sink_queue_sink_pad
-        sink_tee_pad = self._sink_tee.get_static_pad('src_0')
-        assert sink_tee_pad
-        sink_tee_pad.unlink(file_sink_queue_sink_pad)
+        assert pad
+        pad.unlink(file_sink_queue_sink_pad)
 
         # End of stream message triggers the file write to finalise file writing including file headers/footers.
         file_sink_queue_sink_pad.send_event(Gst.Event.new_eos())
 
-        assert self._file_sink_queue.set_state(Gst.State.NULL)
-        assert self._mp4mux.set_state(Gst.State.NULL)
-        assert self._file_sink.set_state(Gst.State.NULL)
+        # assert self._file_sink_queue.set_state(Gst.State.NULL)
+        # assert self._mp4mux.set_state(Gst.State.NULL)
+        # assert self._file_sink.set_state(Gst.State.NULL)
 
         self.state = RecordingState.STOPPED
 
@@ -293,6 +312,9 @@ class TrackerPipeline:
 
     def begin_stopping_recording(self) -> None:
         logger.info(f"Stopping recording on pipeline for = {self.camera_id}.")
+
+        self._last_recording_stop_time = time.time()
+
         # seconds_delta = AFTER_TRANSACTION_BUFFER / 10 ** 9
         # # because recording is "set-back-in-time" for BEFORE_TRANSACTION_BUFFER
         # # we must also add it to time-delta
@@ -305,12 +327,12 @@ class TrackerPipeline:
         # )
 
         assert self._sink_tee
-        sink_tee_pad = self._sink_tee.get_static_pad("src_0")
-        assert sink_tee_pad
-        sink_tee_pad.add_probe(
+        assert self._sink_tee_src_record_pad
+        self._sink_tee_src_record_pad.add_probe(
             Gst.PadProbeType.IDLE, self._stop_recording_pad_callback
         )
-        self.state = RecordingState.STOPPING
+        if self.state != RecordingState.STOPPED:
+            self.state = RecordingState.STOPPING
 
     def terminate(self) -> None:
         self.pipeline.set_state(Gst.State.NULL)
@@ -332,13 +354,23 @@ class TrackerPipeline:
         if position < 10 * Gst.SECOND:
             return True
         elif position % (10 * Gst.SECOND) < Gst.SECOND:
-            if self.state == RecordingState.RECORDING:
+
+            current_time = time.time()
+
+            if self.state == RecordingState.RECORDING and current_time - self._last_recording_start_time > 5.0:
                 logger.info("Trying to stop recording!")
                 self.begin_stopping_recording()
-            elif self.state == RecordingState.STOPPED:
+            elif (self.state == RecordingState.STOPPED or self.state == RecordingState.NOT_STARTED)\
+                    and current_time - self._last_recording_stop_time > 5.0:
                 logger.info("Trying to start recording!")
                 self.begin_starting_recording()
         return True
+
+    def sigint_handler(self, signum, frame) -> None:
+        if self.state == RecordingState.RECORDING:
+            self.begin_stopping_recording()
+        else:
+            self.begin_starting_recording()
 
 
 if __name__ == "__main__":
@@ -357,6 +389,8 @@ if __name__ == "__main__":
     logger.info(f"Successfully created TrackingPipeline for stream {local_rtsp_url}")
 
     GLib.timeout_add_seconds(1, pipeline.new_recording_every_10_seconds, main_loop)
+
+    # signal.signal(signal.SIGINT, pipeline.sigint_handler)
 
     pipeline.start_pipeline(main_loop)
 
