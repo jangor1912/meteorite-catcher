@@ -103,3 +103,16 @@ ffmpeg -r 1 -i videos/some-video.mp4 -r 1 "images/some-video/$filename%03d.png"
 ffmpeg -framerate 25 -pattern_type glob -i '*.png' \
   -c:v libx264 -pix_fmt yuv420p out.mp4
 ```
+
+### Run script inside of docker container
+```bash
+docker run \
+  -it \
+  --rm \
+  --name meteorite-catcher \
+  --network=my-rtsp-network \
+  -v ./data/videos:/data/videos \
+  -v ./src:/code/src \
+  meteorite-catcher:latest \
+  python -m src.gstreamer.stdin_controller
+```

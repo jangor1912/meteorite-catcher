@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import gi
 
@@ -237,6 +238,11 @@ class TrackerPipeline:
         self.state = RecordingState.RECORDING
         self._recording_started_time = time.time()
 
+    def add_callback_probe(self, callback: Callable[[Gst.Pad, Gst.PadProbeInfo], Gst.PadProbeReturn]) -> None:
+        app_tee_src_pad_0 = self._app_tee.get_static_pad("src_0")
+        assert app_tee_src_pad_0
+        return app_tee_src_pad_0.add_probe(Gst.PadProbeType.IDLE, callback)
+
     def _start_recording_pad_callback(self, pad, info):
         assert self._file_sink_queue.set_state(Gst.State.NULL)
         assert self._mp4mux.set_state(Gst.State.NULL)
@@ -284,7 +290,7 @@ class TrackerPipeline:
         if self.state != RecordingState.RECORDING:
             self.state = RecordingState.STARTING
 
-    def _stop_recording_pad_callback(self, pad, info):
+    def _stop_recording_pad_callback(self, pad: Gst.Pad, info: Gst.PadProbeInfo) -> Gst.PadProbeReturn:
         # if self.stop_recording_time is None:
         #     raise RuntimeError(f"Stop recording probe was invoked, but `self._stop_recording_time` is not set!")
         #
@@ -347,6 +353,28 @@ class TrackerPipeline:
             return False
         return True
 
+    def switch_state(self) -> None:
+        current_time = time.time()
+
+        if self.state == RecordingState.RECORDING:
+            logger.info("Trying to stop recording!")
+            if current_time - self._last_recording_start_time > 5.0:
+                logger.info("Beginning stopping recording!")
+                self.begin_stopping_recording()
+            else:
+                logger.info("Recording cannot be stopped,"
+                            " because the current recording "
+                            "lasts less than 5 seconds!")
+        elif self.state == RecordingState.STOPPED or self.state == RecordingState.NOT_STARTED:
+            logger.info("Trying to start recording!")
+            if current_time - self._last_recording_stop_time > 5.0:
+                logger.info("Beginning starting recording!")
+                self.begin_starting_recording()
+            else:
+                logger.info("Recording cannot be started, "
+                            "because the previous recording "
+                            "was created less than 5 seconds ago!")
+
     def new_recording_every_10_seconds(self, loop) -> bool:
         _, position = self.pipeline.query_position(Gst.Format.TIME)
         print("Position: %s\r" % Gst.TIME_ARGS(position))
@@ -354,16 +382,7 @@ class TrackerPipeline:
         if position < 10 * Gst.SECOND:
             return True
         elif position % (10 * Gst.SECOND) < Gst.SECOND:
-
-            current_time = time.time()
-
-            if self.state == RecordingState.RECORDING and current_time - self._last_recording_start_time > 5.0:
-                logger.info("Trying to stop recording!")
-                self.begin_stopping_recording()
-            elif (self.state == RecordingState.STOPPED or self.state == RecordingState.NOT_STARTED)\
-                    and current_time - self._last_recording_stop_time > 5.0:
-                logger.info("Trying to start recording!")
-                self.begin_starting_recording()
+            self.switch_state()
         return True
 
     def sigint_handler(self, signum, frame) -> None:
@@ -384,7 +403,7 @@ if __name__ == "__main__":
     pipeline = TrackerPipeline(
         camera_id="some-camera-id",
         rtsp_url=local_rtsp_url,
-        recordings_directory=Path("/src/data/videos")
+        recordings_directory=Path("/data/videos")
     )
     logger.info(f"Successfully created TrackingPipeline for stream {local_rtsp_url}")
 
