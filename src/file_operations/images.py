@@ -3,6 +3,7 @@ import re
 from glob import glob
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 import cv2
@@ -17,14 +18,16 @@ def get_image_paths(images_dir: Path, image_extension: str) -> list[str]:
     return image_paths
 
 
-def draw_tracks_numpy(frame: NumpyImage, tracks: BBoxList):
+def draw_tracks_numpy(frame: NumpyImage, tracks: BBoxList) -> NumpyImage:
+    frame_copy = np.copy(frame)
     for det in tracks:
         cv2.rectangle(
-            frame,
+            frame_copy,
             (int(det[0]),int(det[1])),
             (int(det[2]),int(det[3])),
             (0,255,0), 3
         )
+    return frame_copy
 
 
 def save_numpy_image(image: NumpyImage, image_output_path: Path) -> None:

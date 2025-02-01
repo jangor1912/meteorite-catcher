@@ -133,5 +133,5 @@ docker run \
   -v ./data/videos:/data/videos \
   -v ./src:/code/src \
   meteorite-catcher:latest \
-  python -m src.gstreamer.stdin_controller
+  python -m src.gstreamer.detector_controller
 ```
