@@ -35,6 +35,9 @@ class DetectorController:
     record_manager: RecordManager | None = field(init=False, default=None)
     _last_state_log_datetime: datetime = field(init=False, default_factory=datetime.now)
 
+    inference_frame_num: int = 0
+    app_tee_frame_num: int = 0
+
     def __post_init__(self):
         image_writer = None
         if self.image_output_directory is not None:
@@ -57,9 +60,13 @@ class DetectorController:
             pad: Gst.Pad,
             info: Gst.PadProbeInfo
     ) -> Gst.PadProbeReturn:
+        self.app_tee_frame_num += 1
         current_time = datetime.now()
         if current_time - self._last_state_log_datetime > timedelta(seconds=3):
             logger.info(f"State of the pipeline is {self.get_pipeline_state().value}")
+            logger.info(f"Decoded and processed frames: {self.inference_frame_num}")
+            logger.info(f"Depayed frames: {self.pipeline.frames_consumed}")
+            logger.info(f"Diff: {self.pipeline.frames_consumed - self.inference_frame_num}")
             self._last_state_log_datetime = current_time
         return Gst.PadProbeReturn.OK
 
@@ -67,6 +74,7 @@ class DetectorController:
         # logger.info(f"Received new numpy frame with dimensions {frame.shape}")
         bboxes = self.inference_engine.update(frame)
         self.record_manager.update_frame(frame, bboxes)
+        self.inference_frame_num += 1
 
     def on_start_recording(self) -> None:
         logger.info("Recording should start now!")
@@ -89,7 +97,7 @@ def main() -> None:
         camera_id="some-camera-id",
         rtsp_url=local_rtsp_url,
         recordings_directory=Path("/data/videos"),
-        recording_buffer=0
+        recording_buffer=int(3e9)
     )
     logger.info(f"Successfully created TrackingPipeline for stream {local_rtsp_url}")
 

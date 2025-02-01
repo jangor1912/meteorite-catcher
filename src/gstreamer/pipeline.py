@@ -52,6 +52,8 @@ class TrackerPipeline:
         self.rtsp_url = rtsp_url
         self._recordings_directory = recordings_directory
         self._recording_buffer = recording_buffer
+        self.frames_consumed = 0
+        self.stop_recording_time = datetime.datetime.now()
 
         self.pipeline = Gst.Pipeline.new(f"camera-{self.camera_id}")
 
@@ -210,6 +212,11 @@ class TrackerPipeline:
         assert self._file_sink_queue.link(self._mp4mux)
         assert self._mp4mux.link(self._file_sink)
 
+        # add probe to fake-sink queue
+        sink_queue_src_pad = self._sink_queue.get_static_pad("src")
+        assert sink_queue_src_pad
+        sink_queue_src_pad.add_probe(Gst.PadProbeType.BUFFER, self._sink_queue_probe_callback)
+
         # set rtsp url
         self._rtsp_source.set_property("location", self.rtsp_url)
 
@@ -353,6 +360,10 @@ class TrackerPipeline:
     def add_app_sink_new_sample_callback(self, callback: Callable[[np.array], None]) -> None:
         self._new_sample_callbacks.append(callback)
 
+    def _sink_queue_probe_callback(self, pad, info):
+        self.frames_consumed += 1
+        return Gst.PadProbeReturn.OK
+
     def _start_recording_pad_callback(self, pad, info):
         assert self._file_sink_queue.set_state(Gst.State.NULL)
         assert self._mp4mux.set_state(Gst.State.NULL)
@@ -401,13 +412,10 @@ class TrackerPipeline:
             self.state = RecordingState.STARTING
 
     def _stop_recording_pad_callback(self, pad: Gst.Pad, info: Gst.PadProbeInfo) -> Gst.PadProbeReturn:
-        # if self.stop_recording_time is None:
-        #     raise RuntimeError(f"Stop recording probe was invoked, but `self._stop_recording_time` is not set!")
-        #
-        # if datetime.datetime.now(tz=tz.tzlocal()) < self._stop_recording_time:
-        #     # Recording should not be stopped yet
-        #     return Gst.PadProbeReturn.PASS
-        # else:
+        if datetime.datetime.now() < self.stop_recording_time:
+            # Recording should not be stopped yet
+            return Gst.PadProbeReturn.PASS
+
         # Recording should be stopped -> file_sink_queue will be unlinked from tee element
         logger.info(f"Reached stopping in '_stop_recording_pad_callback'!")
         file_sink_queue_sink_pad = self._file_sink_queue.get_static_pad('sink')
@@ -431,16 +439,19 @@ class TrackerPipeline:
 
         self._last_recording_stop_time = time.time()
 
-        # seconds_delta = AFTER_TRANSACTION_BUFFER / 10 ** 9
-        # # because recording is "set-back-in-time" for BEFORE_TRANSACTION_BUFFER
-        # # we must also add it to time-delta
-        # seconds_delta += BEFORE_TRANSACTION_BUFFER / 10 ** 9
-        # current_time = datetime.datetime.now(tz=tz.tzlocal())
-        # self.stop_recording_time = current_time + datetime.timedelta(seconds=seconds_delta)
-        # logger.info(
-        #     f"Current time = {current_time}. Recording will be stopped {self.stop_recording_time}. "
-        #     f"Stopping will take {self.stop_recording_time - current_time}"
-        # )
+        before_detection_buffer = self._recording_buffer
+        after_detection_buffer = self._recording_buffer
+
+        seconds_delta = after_detection_buffer / 1e9
+        # because recording is "set-back-in-time" for before_detection_buffer
+        # we must also add it to time-delta
+        seconds_delta += before_detection_buffer / 1e9
+        current_time = datetime.datetime.now()
+        self.stop_recording_time = current_time + datetime.timedelta(seconds=seconds_delta)
+        stopping_latency = self.stop_recording_time - current_time
+        logger.info(f"Current time = {current_time.strftime('%H:%M:%S.%s')}")
+        logger.info(f"Recording will be stopped in {self.stop_recording_time.strftime('%H:%M:%S.%s')}")
+        logger.info(f"Stopping will take {stopping_latency.total_seconds()}")
 
         assert self._sink_tee
         assert self._sink_tee_src_record_pad
