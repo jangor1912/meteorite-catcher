@@ -6,10 +6,14 @@ import uuid
 from functools import partial
 from pathlib import Path
 from typing import Callable
-
-from gi.repository import GLib, Gst, GObject
-
 from src.gstreamer.pipeline import initialize_gstreamer, TrackerPipeline
+import numpy as np
+
+import gi
+gi.require_version('Gst', '1.0')
+gi.require_version('GLib', '2.0')
+
+from gi.repository import GLib, Gst
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging.getLogger()
@@ -96,13 +100,17 @@ def switch_on_random_callback(
     unique_uuid = str(uuid.uuid4())
     # logger.info(f"[{unique_uuid}] Reached 'switch_on_random_callback' callback!")
 
-    random_int = random.randint(1, 1000)
+    random_int = random.randint(1, 100)
     if random_int <= 1:
         logger.info(f"[{unique_uuid}] Switching in 'switch_on_random_callback'!")
         switch_state_func()
 
     # logger.info(f"[{unique_uuid}] Finished 'switch_on_random_callback' callback!")
     return Gst.PadProbeReturn.OK
+
+
+def compute_numpy_frame(frame: np.array) -> None:
+    logger.info(f"Received new numpy frame with dimensions {frame.shape}")
 
 
 if __name__ == "__main__":
@@ -122,6 +130,9 @@ if __name__ == "__main__":
     callback = partial(switch_on_random_callback, switch_state_func=pipeline.switch_state)
 
     pipeline.add_callback_probe(callback)
+
+    pipeline.add_app_sink_new_sample_callback(compute_numpy_frame)
+
     pipeline.start_pipeline(main_loop)
 
     try:
@@ -129,3 +140,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Exception during pipeline execution. Error = {e}")
         pass
+

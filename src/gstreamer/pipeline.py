@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 import gi
+import numpy as np
 
 from src.gstreamer.utils import RecordingState
 
@@ -62,9 +63,11 @@ class TrackerPipeline:
         self._app_tee = None
 
         # Decode video and pass frames to Meteorite Detector
-        # self._avdec_h264 = None
-        # self._videoconvert = None
-        # self._appsink = None
+        self._app_queue = None
+        self._decoder = None
+        self._videoconvert = None
+        self._capsfilter = None
+        self._appsink = None
 
         self._sink_queue = None
         self._sink_tee = None
@@ -87,6 +90,8 @@ class TrackerPipeline:
         self._last_recording_start_time = time.time()
         self._last_recording_stop_time = time.time()
 
+        self._new_sample_callbacks: list[Callable[[np.array], None]] = list()
+
     def initialize_pipeline(self) -> None:
         self._rtsp_source = Gst.ElementFactory.make("rtspsrc", "rtsp-source")
         self._rtp_queue = Gst.ElementFactory.make("queue", "rtp-queue")
@@ -95,9 +100,11 @@ class TrackerPipeline:
 
         self._app_tee = Gst.ElementFactory.make("tee", "app-tee")
 
-        # self._avdec_h264 = Gst.ElementFactory.make("avdec_h264", "avdec-h264")
-        # self._videoconvert = Gst.ElementFactory.make("videoconvert", "videoconvert")
-        # self._appsink = Gst.ElementFactory.make("appsink", "appsink")
+        self._app_queue = Gst.ElementFactory.make("queue", "app-queue")
+        self._decoder = Gst.ElementFactory.make("decodebin3", "decoder")
+        self._videoconvert = Gst.ElementFactory.make("videoconvert", "videoconvert")
+        self._capsfilter = Gst.ElementFactory.make("capsfilter", "capsfilter")
+        self._appsink = Gst.ElementFactory.make("appsink", "appsink")
 
         self._sink_queue = Gst.ElementFactory.make("queue", "sink-queue")
         self._sink_tee = Gst.ElementFactory.make("tee", "sink-tee")
@@ -114,9 +121,11 @@ class TrackerPipeline:
         assert self._depay
         assert self._parser
         assert self._app_tee
-        # assert self._avdec_h264
-        # assert self._videoconvert
-        # assert self._appsink
+        assert self._app_queue
+        assert self._decoder
+        assert self._videoconvert
+        assert self._capsfilter
+        assert self._appsink
         assert self._sink_queue
         assert self._sink_tee
         assert self._file_sink_queue
@@ -125,14 +134,25 @@ class TrackerPipeline:
         assert self._fake_sink_queue
         assert self._fake_sink
 
+        # Set caps for app-sink
+        caps = Gst.Caps.from_string("video/x-raw, format=BGR")
+        self._capsfilter.set_property("caps", caps)
+
         self.pipeline.add(self._rtsp_source)
         self.pipeline.add(self._rtp_queue)
         self.pipeline.add(self._depay)
         self.pipeline.add(self._parser)
         self.pipeline.add(self._app_tee)
-        # self.pipeline.add(self._avdec_h264)
-        # self.pipeline.add(self._videoconvert)
-        # self.pipeline.add(self._appsink)
+
+        # Add app-sink branch
+        # FIXME it fails on adding those elements to pipeline
+        self.pipeline.add(self._app_queue)
+        self.pipeline.add(self._decoder)
+        self.pipeline.add(self._videoconvert)
+        self.pipeline.add(self._capsfilter)
+        self.pipeline.add(self._appsink)
+
+        # Add file-sink branch
         self.pipeline.add(self._sink_queue)
         self.pipeline.add(self._sink_tee)
         self.pipeline.add(self._file_sink_queue)
@@ -147,11 +167,29 @@ class TrackerPipeline:
         assert self._depay.link(self._parser)
         assert self._parser.link(self._app_tee)
 
+        # Link sink-queue
         app_tee_src_pad_0 = self._app_tee.get_request_pad("src_0")
         assert app_tee_src_pad_0
         sink_queue_sink_pad = self._sink_queue.get_static_pad("sink")
         assert sink_queue_sink_pad
         assert app_tee_src_pad_0.link(sink_queue_sink_pad) == Gst.PadLinkReturn.OK
+
+        # Link app-sink branch
+        app_tee_src_pad_1 = self._app_tee.get_request_pad("src_1")
+        assert app_tee_src_pad_1
+        app_queue_sink_pad = self._app_queue.get_static_pad("sink")
+        assert app_queue_sink_pad
+        assert app_tee_src_pad_1.link(app_queue_sink_pad) == Gst.PadLinkReturn.OK
+        assert self._app_queue.link(self._decoder)
+        # assert self._decoder.link(self._videoconvert)
+        # decoder_src_pad_0 = self._decoder.get_request_pad("src_0")
+        # assert decoder_src_pad_0
+        # videoconvert_sink_pad = self._videoconvert.get_static_pad("sink")
+        # assert videoconvert_sink_pad
+        # assert decoder_src_pad_0.link(videoconvert_sink_pad) == Gst.PadLinkReturn.OK
+        self._decoder.connect("pad-added", self.on_decoder_pad_added, None)
+        assert self._videoconvert.link(self._capsfilter)
+        assert self._capsfilter.link(self._appsink)
 
         self._sink_queue.link(self._sink_tee)
 
@@ -186,6 +224,11 @@ class TrackerPipeline:
         self._sink_queue.set_property("max-size-buffers", 0)
         self._sink_queue.set_property("max-size-time", 0)
         self._sink_queue.set_property("max-size-bytes", 0)
+
+        # add callbacks to app-sink
+        self._appsink.set_property("emit-signals", True)
+        self._appsink.set_property("sync", False)  # Set sync=False to process frames as fast as they arrive.
+        self._appsink.connect("new-sample", self._on_new_sample, None)
 
     @property
     def state(self) -> RecordingState:
@@ -229,6 +272,27 @@ class TrackerPipeline:
         else:
             logger.error(f"[Element = {element}] rtp-queue could not be linked linked to rtsp-source!")
 
+    def on_decoder_pad_added(self, decoder, pad, data):
+        videoconvert_sink_pad = self._videoconvert.get_static_pad("sink")
+        assert videoconvert_sink_pad
+
+        # Check if the pad's caps are compatible with videoconvert's sink pad caps
+        caps = pad.get_current_caps()
+        if caps is None:
+            caps = pad.query_caps()
+
+        # Optionally, you can filter the pad based on its media type.
+        structure = caps.get_structure(0)
+        media_type = structure.get_name()
+        logger.info(f"New pad added with type: {media_type}")
+
+        # Attempt to link
+        ret = pad.link(videoconvert_sink_pad)
+        if ret == Gst.PadLinkReturn.OK:
+            logger.info("Successfully linked decoder pad to videoconvert")
+        else:
+            logger.error(f"Failed to link decoder pad to videoconvert. Link return: {ret}")
+
     def start_pipeline(self, loop: GLib.MainLoop) -> None:
         logger.info(f"Starting pipeline for rtsp-url: {self.rtsp_url}.")
         self.add_bus_to_pipeline(loop)
@@ -242,6 +306,52 @@ class TrackerPipeline:
         app_tee_src_pad_0 = self._app_tee.get_static_pad("src_0")
         assert app_tee_src_pad_0
         return app_tee_src_pad_0.add_probe(Gst.PadProbeType.IDLE, callback)
+
+    def _on_new_sample(self, sink, data) -> None:
+        """
+        Callback function that is invoked each time appsink has a new sample.
+        It pulls the sample, maps the buffer, and converts it to a NumPy array.
+        """
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.ERROR
+
+        # Retrieve the buffer from the sample
+        buffer = sample.get_buffer()
+        # Retrieve the caps (capabilities) to get frame dimensions etc.
+        caps = sample.get_caps()
+        structure = caps.get_structure(0)
+        # Read width, height from the caps; adjust these field names as needed.
+        width = structure.get_value("width")
+        height = structure.get_value("height")
+
+        # Map the buffer so we can access its data
+        success, map_info = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            logger.info("Could not map buffer data!")
+            return Gst.FlowReturn.ERROR
+
+        try:
+            # Convert the mapped data to a NumPy array.
+            # We assume the format is BGR (3 channels, 8-bit each) as set later in the pipeline.
+            frame = np.frombuffer(map_info.data, dtype=np.uint8)
+            # Reshape the array to [height, width, channels]
+            frame = frame.reshape((height, width, 3))
+            # Now you have a NumPy array representing the video frame.
+            # You can process the frame here (e.g., run OpenCV operations).
+            # logger.info(f"Received frame with shape: {frame.shape}")
+            for callback in self._new_sample_callbacks:
+                callback(frame)
+        except Exception as e:
+            logger.error(f"Error processing frame: {e}")
+        finally:
+            # Unmap the buffer after processing
+            buffer.unmap(map_info)
+
+        return Gst.FlowReturn.OK
+
+    def add_app_sink_new_sample_callback(self, callback: Callable[[np.array], None]) -> None:
+        self._new_sample_callbacks.append(callback)
 
     def _start_recording_pad_callback(self, pad, info):
         assert self._file_sink_queue.set_state(Gst.State.NULL)

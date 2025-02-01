@@ -54,6 +54,10 @@ RUN apt-get install -y --no-install-recommends \
     gobject-introspection \
     gir1.2-gst-rtsp-server-1.0
 
+# FFmpeg for software decoding libraries
+RUN apt-get install -y --no-install-recommends \
+    ffmpeg
+
 
 ARG gstreamer_python_version=c8d4e04e1cdeb3b284641b981afcf304f50480db
 RUN mkdir /github_tmp

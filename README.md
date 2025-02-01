@@ -88,7 +88,25 @@ docker run \
   meteorite-catcher:latest \
       gst-launch-1.0 -e \
       rtspsrc location=rtsp://mediamtx:8554/mystream \
-      ! rtph264depay ! h264parse ! mp4mux ! filesink location=/data/videos/camera.mp4
+      ! rtph264depay ! h264parse \
+      ! video/x-h264 \
+      ! openh264dec \
+      ! encodebin profile="mp4" \
+      ! filesink location=/data/videos/camera.mp4
+```
+
+To see if you have all the elements needed for gstreamer to work
+you can tun container in interactive mode
+```bash
+docker run \
+  -it \
+  --rm \
+  --network=my-rtsp-network \
+  --name meteorite-catcher \
+  -e GST_DEBUG=3 \
+  -v ./data/videos:/data/videos \
+  --entrypoint "/bin/bash" \
+  meteorite-catcher:latest
 ```
 
 ## Useful commands
@@ -110,6 +128,7 @@ docker run \
   -it \
   --rm \
   --name meteorite-catcher \
+  -e GST_DEBUG=3 \
   --network=my-rtsp-network \
   -v ./data/videos:/data/videos \
   -v ./src:/code/src \
