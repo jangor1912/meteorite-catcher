@@ -5,7 +5,11 @@ Project that detects meteorites on videos from CCTV cameras
 
 ### For Production
 ```bash
- docker build --tag meteorite-catcher . --target=prod
+ docker build \
+  --tag meteorite-catcher-small \
+  --platform linux/amd64 \
+  -f Dockerfile-small . \
+  --target=prod
 ```
 
 ### For Development
@@ -67,7 +71,7 @@ docker run \
   -v ./data/videos:/data/videos \
   linuxserver/ffmpeg \
     -re -stream_loop -1 \
-      -i /data/videos/meteorite-vertical.mp4 \
+      -i /data/videos/lol.mp4 \
       -c copy -f rtsp rtsp://mediamtx:8554/mystream
 ```
 
@@ -85,7 +89,7 @@ docker run \
   --name meteorite-catcher \
   -e GST_DEBUG=3 \
   -v ./data/videos:/data/videos \
-  meteorite-catcher:latest \
+  meteorite-catcher-small:latest \
       gst-launch-1.0 -e \
       rtspsrc location=rtsp://mediamtx:8554/mystream \
       ! rtph264depay ! h264parse \
@@ -96,7 +100,7 @@ docker run \
 ```
 
 To see if you have all the elements needed for gstreamer to work
-you can tun container in interactive mode
+you can run container in interactive mode
 ```bash
 docker run \
   -it \
@@ -132,6 +136,21 @@ docker run \
   --network=my-rtsp-network \
   -v ./data/videos:/data/videos \
   -v ./src:/code/src \
-  meteorite-catcher:latest \
+  meteorite-catcher-small:latest \
   python -m src.gstreamer.detector_controller
+```
+
+### Run docker container in PROD
+```bash
+docker run \
+  -it \
+  --rm \
+  --name meteorite-catcher \
+  --network=my-rtsp-network \
+  -v ./data/videos:/data/videos \
+  -e RTSP_URL="rtsp://mediamtx:8554/mystream" \
+  -e MIN_HITS=2 \
+  -e BBOX_THRESHOLD=32 \
+  -e NMS_THRESHOLD=0.0001 \
+  meteorite-catcher-small:latest
 ```

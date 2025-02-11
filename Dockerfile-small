@@ -1,0 +1,145 @@
+FROM ubuntu:24.04 AS base
+
+LABEL authors="jan.gorazda"
+
+RUN apt-get update
+RUN apt-get upgrade -y
+
+# setup python
+RUN apt-get -y --no-install-recommends install \
+    git \
+    sudo \
+    curl \
+    unzip \
+    vim \
+    wget \
+    build-essential \
+    libssl-dev \
+    cmake \
+    gcc \
+    pkg-config \
+    python3.12 \
+    python3-pip \
+    python3.12-dev \
+    python3.12-venv
+
+RUN apt-get -y --no-install-recommends install \
+    autoconf \
+    automake \
+    libtool \
+    gstreamer-1.0 \
+    gstreamer1.0-dev \
+    libgstreamer1.0-0 \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    gstreamer1.0-libav \
+    gstreamer1.0-tools \
+    gstreamer1.0-x \
+    gstreamer1.0-alsa \
+    gstreamer1.0-gl \
+    gstreamer1.0-gtk3 \
+    gstreamer1.0-qt5 \
+    gstreamer1.0-pulseaudio \
+    libglib2.0-dev \
+    libglib2.0-dev-bin \
+    python-gi-dev \
+    python3-gi \
+    python3-gst-1.0 \
+    libgirepository1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libcairo2-dev \
+    gir1.2-gstreamer-1.0 \
+    gobject-introspection \
+    gir1.2-gtk-3.0
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+RUN wget -O opencv.zip https://github.com/opencv/opencv/archive/4.11.0.zip
+RUN unzip opencv.zip
+RUN mv opencv-4.11.0 opencv
+
+RUN cd opencv && \
+	mkdir build && \
+	cd build && \
+	cmake -D CMAKE_BUILD_TYPE=RELEASE \
+	-D INSTALL_PYTHON_EXAMPLES=OFF \
+	-D INSTALL_C_EXAMPLES=OFF \
+	-D PYTHON_EXECUTABLE=$(which python) \
+	-D BUILD_opencv_python2=OFF \
+	-D CMAKE_INSTALL_PREFIX=$(python -c "import sys; print(sys.prefix)") \
+	-D PYTHON3_EXECUTABLE=$(which python) \
+	-D PYTHON3_INCLUDE_DIR=$(python -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())") \
+	-D PYTHON3_PACKAGES_PATH=$(python -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())") \
+	-D WITH_GSTREAMER=ON \
+	-D BUILD_EXAMPLES=OFF .. && \
+	make -j$(nproc) && \
+	make install && \
+	ldconfig
+
+# RTSP server for testing purposes
+#RUN apt-get install -y --no-install-recommends \
+#    libgstrtspserver-1.0-0 \
+#    gstreamer1.0-rtsp \
+#    libgirepository1.0-dev \
+#    gobject-introspection \
+#    gir1.2-gst-rtsp-server-1.0
+
+ENV PYTHONFAULTHANDLER=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONHASHSEED=random \
+    PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    PIP_DEFAULT_TIMEOUT=100 \
+    # Poetry's configuration:
+    POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_CREATE=true \
+    POETRY_CACHE_DIR='/var/cache/pypoetry' \
+    POETRY_HOME='/usr/local' \
+    POETRY_VERSION=1.8.3
+
+# System deps:
+RUN curl -sSL https://install.python-poetry.org | python -
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy only requirements to cache them in docker layer
+WORKDIR /code
+COPY poetry.lock pyproject.toml /code/
+
+FROM base AS prod
+
+# Project initialization with only main packages:
+RUN poetry install --only=main --no-interaction --no-ansi
+
+# Copy start script
+COPY ./start.sh /code
+RUN chmod +x /code/start.sh
+
+# Creating folders, and files for a project:
+COPY ./src /code/src
+
+ENV RTSP_URL="rtsp://test-rtsp-url:554"
+ENV DATA_DIR="/data/videos"
+ENV BBOX_THRESHOLD=128
+ENV NMS_THRESHOLD=0.001
+ENV MIN_HITS=3
+ENV MAX_AGE=5
+
+CMD ["/bin/sh", "./start.sh"]
+
+FROM prod AS dev
+
+# Project initialization with all dependencies:
+RUN poetry install --no-interaction --no-ansi
+
+# Creating folders, and files for a project:
+COPY ./dev /code/dev
+COPY ./tests /code/tests
+
+CMD ["pytest"]

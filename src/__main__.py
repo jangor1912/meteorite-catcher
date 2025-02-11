@@ -1,131 +1,113 @@
+import argparse
 import logging
 import sys
-import time
 from pathlib import Path
 
-import cv2
-import numpy as np
 from ioutrack import Sort
 
 from src.detectors.frame_diff import FrameDiffDetector
-from src.file_operations.generators import ImageGenerator
-from src.file_operations.images import draw_tracks_numpy, save_numpy_image
-from src.detectors.functions import get_detections
-from src.file_operations.writer import ImageWriter
+from src.gstreamer.detector_controller import DetectorController
+from src.gstreamer.pipeline import initialize_gstreamer, TrackerPipeline
+
+import gi
+
+from src.inference.inference import FrameDiffInference
+
+gi.require_version('Gst', '1.0')
+gi.require_version('GLib', '2.0')
+
+from gi.repository import GLib, Gst
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logger = logging.getLogger()
 
 PROJECT_DIRECTORY = Path(__file__).parent.parent
 DATA_DIRECTORY = PROJECT_DIRECTORY / "data"
 IMAGES_DIRECTORY = DATA_DIRECTORY / "images"
+VIDEOS_DIRECTORY = DATA_DIRECTORY / "videos"
 OUTPUT_DIRECTORY = DATA_DIRECTORY / "output"
 
 
-def draw_tracks_on_images(image_paths: list[str], output_directory: Path) -> None:
-    min_hits = 5
-    max_age = 5
+def run_pipeline(
+        rtsp_url: str,
+        data_dir: Path,
+        bbox_threshold: int = 128,
+        nms_threshold: float = 1e-3,
+        tracker_min_hits: int = 3,
+        tracker_max_age: int = 5,
+        recording_buffer: int = 3000000000
+) -> None:
+    initialize_gstreamer()
+    main_loop = GLib.MainLoop()
 
-    tracker = Sort(max_age=max_age, min_hits=min_hits)
+    logger.info(f"Creating TrackingPipeline for stream {rtsp_url}")
+    pipeline = TrackerPipeline(
+        camera_id="some-camera-id",
+        rtsp_url=rtsp_url,
+        recordings_directory=data_dir,
+        recording_buffer=recording_buffer
+    )
+    logger.info(f"Successfully created TrackingPipeline for stream {rtsp_url}")
 
-    idx = 2
-    frame1_bgr = cv2.imread(image_paths[idx - 2])
-    frame2_bgr = cv2.imread(image_paths[idx - 1])
-
-    detections_1 = get_detections(cv2.cvtColor(frame1_bgr, cv2.COLOR_BGR2GRAY),
-                                  cv2.cvtColor(frame2_bgr, cv2.COLOR_BGR2GRAY),
-                                  bbox_thresh=128,
-                                  nms_thresh=1e-3)
-
-    tracker.update(detections_1.astype(np.float32), return_all=False)
-
-    while idx < len(image_paths):
-        # read frames
-        frame3_bgr = cv2.imread(image_paths[idx])
-
-        # get detections
-        detections_2 = get_detections(cv2.cvtColor(frame2_bgr, cv2.COLOR_BGR2GRAY),
-                                      cv2.cvtColor(frame3_bgr, cv2.COLOR_BGR2GRAY),
-                                      bbox_thresh=128,
-                                      nms_thresh=1e-3)
-        tracks = tracker.update(detections_2.astype(np.float32), return_all=False)
-
-        # draw only after initial period
-        if idx > min_hits:
-            # draw bounding boxes on frame
-            draw_tracks_numpy(frame2_bgr, tracks)
-
-        # save image for GIF
-        save_numpy_image(
-            image=frame2_bgr,
-            image_output_path=output_directory / f"frame_{idx - 1}.png"
+    inference_engine = FrameDiffInference(
+        detector=FrameDiffDetector(
+            bbox_threshold=bbox_threshold,
+            nms_threshold=nms_threshold
+        ),
+        tracker=Sort(
+            min_hits=tracker_min_hits,
+            max_age=tracker_max_age
         )
+    )
 
-        # increment index
-        frame1_bgr = frame2_bgr
-        frame2_bgr = frame3_bgr
-        detections_1 = detections_2
-        idx += 1
+    controller = DetectorController(
+        inference_engine=inference_engine,
+        pipeline=pipeline,
+        image_output_directory=data_dir,
+    )
 
+    pipeline.add_callback_probe(controller.switch_on_record_manager_callback)
 
-def draw_tracks(image_directory: Path, output_directory: Path) -> None:
-    image_generator = ImageGenerator(images_directory=image_directory)
-    detector = FrameDiffDetector(bbox_threshold=128, nms_threshold=1e-3)
-    tracker = Sort(min_hits=5, max_age=5)
-    image_writer = ImageWriter(output_directory=output_directory)
+    pipeline.add_app_sink_new_sample_callback(controller.update_with_frame)
 
-    images_number = len(image_generator)
+    pipeline.start_pipeline(main_loop)
 
-    for i, image in enumerate(image_generator):
-        logging.info(f"Processing image {i} / {images_number}")
-        start_time = time.time()
-
-        bboxes = detector.update(image)
-        bboxes = tracker.update(bboxes, return_all=False)
-
-        inference_time = time.time()
-
-        logging.info(f"\tInference latency: {inference_time - start_time}")
-
-        draw_tracks_numpy(
-            frame=image,
-            tracks=bboxes
-        )
-
-        image_writer.save(image)
-
-        writing_time = time.time()
-        logging.info(f"\tWriting image latency: {writing_time - inference_time}")
-
-        logging.info(f"\tFinished. Took {writing_time - start_time}")
+    try:
+        main_loop.run()
+    except Exception as e:
+        logger.error(f"Exception during pipeline execution. Error = {e}")
+        raise e
 
 
 def main() -> None:
-    video_name = "meteorite-exploding"
+    parser = argparse.ArgumentParser()
 
-    images_directory = IMAGES_DIRECTORY / video_name
+    parser.add_argument("--rtsp-url", help="RTSP URL of camera stream", type=str)
+    parser.add_argument("--data-dir", help="Directory to save data to", type=str)
+    parser.add_argument("--bbox-th", help="Bounding Box area threshold in pixels", type=int)
+    parser.add_argument("--nms-th", help="Non-Maximum Suppression threshold (IOU threshold)", type=float)
+    parser.add_argument(
+        "--min-hits",
+        help="Minimum number of successive detections to start recording",
+        type=int
+    )
+    parser.add_argument(
+        "--max-age",
+        help="Maximum frames without matching detections before stopping recording",
+        type=int
+    )
 
-    # image_paths = get_image_paths(images_directory, "png")
+    args = parser.parse_args()
 
-    output_directory = OUTPUT_DIRECTORY / video_name
-    output_directory.mkdir(exist_ok=True, parents=True)
-
-    # draw_tracks_on_images(
-    #     image_paths=image_paths,
-    #     output_directory=output_directory
-    # )
-    #
-    # create_gif_from_images(
-    #     str(output_directory / f"{video_name}.gif"),
-    #     str(output_directory),
-    #     ".png"
-    # )
-
-    draw_tracks(
-        image_directory=images_directory,
-        output_directory=output_directory
+    run_pipeline(
+        rtsp_url=args.rtsp_url,
+        data_dir=Path(args.data_dir),
+        bbox_threshold=args.bbox_th,
+        nms_threshold=args.nms_th,
+        tracker_min_hits=args.min_hits,
+        tracker_max_age=args.max_age
     )
 
 
 if __name__ == "__main__":
     main()
-

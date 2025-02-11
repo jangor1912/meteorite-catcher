@@ -49,7 +49,8 @@ class DetectorController:
             start_recording_function=self.on_start_recording,
             stop_recording_function=self.on_stop_recording,
             get_state_function=self.get_pipeline_state,
-            image_writer=image_writer
+            image_writer=image_writer,
+            start_recording_threshold=2,
         )
 
     def get_pipeline_state(self) -> RecordingState:
@@ -103,7 +104,7 @@ def main() -> None:
 
     inference_engine = FrameDiffInference(
         detector=FrameDiffDetector(bbox_threshold=128, nms_threshold=1e-3),
-        tracker=Sort(min_hits=5, max_age=5)
+        tracker=Sort(min_hits=3, max_age=5)
     )
 
     controller = DetectorController(
